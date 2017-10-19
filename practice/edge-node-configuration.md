@@ -66,6 +66,7 @@ keepalived的官方配置文档见：http://keepalived.org/pdf/UserGuide.pdf
 配置文件`/etc/keepalived/keepalived.conf`文件内容如下：
 
 ```
+172.20.0.113：
 ! Configuration File for keepalived
 
 global_defs {
@@ -75,11 +76,39 @@ global_defs {
    notification_email_from kaadmin@localhost
    smtp_server 127.0.0.1
    smtp_connect_timeout 30
-   router_id LVS_DEVEL
+   router_id LVS_01
 }
 
 vrrp_instance VI_1 {
     state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 150
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        172.20.0.119
+    }
+}
+
+172.20.0.114：
+! Configuration File for keepalived
+
+global_defs {
+   notification_email {
+     root@localhost
+   }
+   notification_email_from kaadmin@localhost
+   smtp_server 127.0.0.1
+   smtp_connect_timeout 30
+   router_id LVS_02
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
     interface eth0
     virtual_router_id 51
     priority 100
@@ -93,40 +122,38 @@ vrrp_instance VI_1 {
     }
 }
 
-virtual_server 172.20.0.119 80{
-    delay_loop 6
-    lb_algo loadbalance
-    lb_kind DR
-    nat_mask 255.255.255.0
-    persistence_timeout 0
-    protocol TCP
+172.20.0.115：
+! Configuration File for keepalived
 
-    real_server 172.20.0.113 80{
-        weight 1
-        TCP_CHECK {
-        connect_timeout 3
-        }
+global_defs {
+   notification_email {
+     root@localhost
+   }
+   notification_email_from kaadmin@localhost
+   smtp_server 127.0.0.1
+   smtp_connect_timeout 30
+   router_id LVS_03
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface eth0
+    virtual_router_id 51
+    priority 50
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
     }
-    real_server 172.20.0.114 80{
-        weight 1
-        TCP_CHECK {
-        connect_timeout 3
-        }
-    }
-    real_server 172.20.0.115 80{
-        weight 1
-        TCP_CHECK {
-        connect_timeout 3
-        }
+    virtual_ipaddress {
+        172.20.0.119
     }
 }
 ```
 
-`Realserver`的IP和端口即traefik供外网访问的IP和端口。
+`virtual_ipaddress`就是traefik供外网访问的vip。
 
-将以上配置分别拷贝到另外两台node的`/etc/keepalived`目录下。
-
-我们使用转发效率最高的`lb_kind DR`直接路由方式转发，使用TCP_CHECK来检测real_server的health。
+将以上配置分别拷贝到对应node的`/etc/keepalived`目录下。
 
 **启动keepalived**
 
@@ -134,20 +161,28 @@ virtual_server 172.20.0.119 80{
 systemctl start keepalived
 ```
 
-三台node都启动了keepalived后，观察eth0的IP，会在三台node的某一台上发现一个VIP是172.20.0.119。
+三台node都启动了keepalived后，由于设置了172.20.0.113为MASTER，故在172.20.0.113节点上发现有个VIP是172.20.0.119。
 
 ```bash
 $ ip addr show eth0
 2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP qlen 1000
     link/ether f4:e9:d4:9f:6b:a0 brd ff:ff:ff:ff:ff:ff
-    inet 172.20.0.115/17 brd 172.20.127.255 scope global eth0
+    inet 172.20.0.113/17 brd 172.20.127.255 scope global eth0
        valid_lft forever preferred_lft forever
     inet 172.20.0.119/32 scope global eth0
        valid_lft forever preferred_lft forever
 ```
+由于BACKUP节点172.20.0.114的priority(优先级)比172.20.0.115的priority的低，关闭172.20.0.114的keepalived，可以发现VIP漂移到了172.20.0.114节点。
 
-关掉拥有这个VIP主机上的keepalived，观察VIP是否漂移到了另外两台主机的其中之一上。
-
+```bash
+$ ip addr show eth0
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP qlen 1000
+    link/ether f4:e9:d4:9f:6b:a0 brd ff:ff:ff:ff:ff:ff
+    inet 172.20.0.114/17 brd 172.20.127.255 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet 172.20.0.119/32 scope global eth0
+       valid_lft forever preferred_lft forever
+```
 ## 改造Traefik
 
 在这之前我们启动的traefik使用的是deployment，只启动了一个pod，无法保证高可用（即需要将pod固定在某一台主机上，这样才能对外提供一个唯一的访问地址），现在使用了keepalived就可以通过VIP来访问traefik，同时启动多个traefik的pod保证高可用。
